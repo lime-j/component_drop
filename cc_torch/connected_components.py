@@ -14,7 +14,5 @@ def connected_components_labeling(x):
     """
     if x.ndim == 2:
         return _C.cc_2d(x)
-    elif x.ndim == 3:
-        return _C.cc_3d(x)
     else:
         raise ValueError("x must be [H, W] or [D, H, W] shapes")
