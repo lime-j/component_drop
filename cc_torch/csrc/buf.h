@@ -24,7 +24,7 @@ __device__ int32_t find_n_compress(int32_t *s_buf, int32_t *siz_buf, int32_t n) 
         n = s_buf[n];
         s_buf[id] = n;
     }
-    atomicAdd(siz_buf + n, siz_buf[id]);
+    if (id != n) atomicAdd(siz_buf + n, siz_buf[id]);
     return n;
 }
 
