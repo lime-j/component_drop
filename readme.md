@@ -1,5 +1,12 @@
 # Connected Components Labeling for PyTorch
 
+Modified from the up-stream version, this fork modified/enhanced the origin code in the following perspective:
+
++ Added support for batch-inference
++ Added support for connected components counting
++ Removed 3d labeling (Since I don't need this for my project)
+
+
 References
 - [YACCLAB : Yet Another Connected Components Labeling Benchmark](https://github.com/prittt/YACCLAB)
 

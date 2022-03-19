@@ -4,13 +4,11 @@
 #define BLOCK_ROWS 16
 #define BLOCK_COLS 16
 
-namespace cc2d
-{
-    __global__ void init_labeling(int32_t *label, const uint32_t W, const uint32_t H)
-    {
+namespace cc2d {
+    __global__ void init_labeling(int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = row * W + col;
+        const uint32_t idx = pivot[row * W + col];
 
         if (row < H && col < W) {
             label[idx] = idx;
@@ -18,23 +16,26 @@ namespace cc2d
 
     }
 
-    __global__ void init_sizing(const uint8_t *img, int32_t *size, const uint32_t W, const uint32_t H){
+    __global__ void init_sizing(const uint8_t *img, int32_t *size, int32_t *pivot, const uint32_t W, const uint32_t H) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
         const uint32_t idx = row * W + col;
+        if (row < H && col < W) {
+            pivot[idx] = (img[idx] ? idx : img[idx + 1] ? idx + 1 : img[idx + W] ? idx + W : img[idx + W + 1] ? idx +
+                                                                                                                W + 1
+                                                                                                              : idx);
+            pivot[idx + 1] = pivot[idx + W] = pivot[idx + 1 + W] = pivot[idx];
+            size[pivot[idx]] = (img[idx] > 0 ? 1 : 0) + (img[idx + 1] > 0 ? 1 : 0) + (img[idx + W] > 0 ? 1 : 0) +
+                               (img[idx + 1 + W] > 0 ? 1 : 0);
+            size[idx + 1] = size[idx + W] = size[idx + 1 + W] = size[idx] = size[pivot[idx]];
+        }
 
-
-        size[idx] += (img[idx] != 0);
-        size[idx] += (img[idx + 1] != 0);
-        size[idx] += (img[idx + W] != 0);
-        size[idx] += (img[idx] != 0);
-        size[idx + 1] = size[idx + W] = size[idx + 1 + W] = size[idx]
     }
 
-    __global__ void merge(uint8_t *img, int32_t *label, const uint32_t W, const uint32_t H)
-    {
+    __global__ void merge(uint8_t *img, int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
+        const uint32_t pivot_idx = pivot[row * W + col];
         const uint32_t idx = row * W + col;
 
         if (row >= H || col >= W)
@@ -60,71 +61,70 @@ namespace cc2d
         // if (buffer[1])              P |= (0x777 << 1);
         // if (buffer[2])              P |= (0x777 << 4);
 
-        if (img[idx])                      P |= 0x777;      // 0000 0111 0111 0111
-        if (row + 1 < H && img[idx + W])   P |= 0x777 << 4; // 0111 0111 0111 0000
-        if (col + 1 < W && img[idx + 1])   P |= 0x777 << 1; // 0000 1110 1110 1110
+        if (img[idx]) P |= 0x777;      // 0000 0111 0111 0111
+        if (row + 1 < H && img[idx + W]) P |= 0x777 << 4; // 0111 0111 0111 0000
+        if (col + 1 < W && img[idx + 1]) P |= 0x777 << 1; // 0000 1110 1110 1110
 
-        if (col == 0)               P &= 0xEEEE;            // 1110 1110 1110 1110
-        if (col + 1 >= W)           P &= 0x3333;            // 0011 0011 0011 0011
-        else if (col + 2 >= W)      P &= 0x7777;            // 0111 0111 0111 0111
+        if (col == 0) P &= 0xEEEE;            // 1110 1110 1110 1110
+        if (col + 1 >= W) P &= 0x3333;            // 0011 0011 0011 0011
+        else if (col + 2 >= W) P &= 0x7777;            // 0111 0111 0111 0111
 
-        if (row == 0)               P &= 0xFFF0;            // 1111 1111 1111 0000
-        if (row + 1 >= H)           P &= 0xFF;              // 0000 0000 1111 1111
+        if (row == 0) P &= 0xFFF0;            // 1111 1111 1111 0000
+        if (row + 1 >= H) P &= 0xFF;              // 0000 0000 1111 1111
 
-        if (P > 0)
-        {
+        if (P > 0) {
             // If need check about top-left pixel(if flag the first bit) and hit the top-left pixel
-            if (hasBit(P, 0) && img[idx - W - 1]){
-                union_(label, idx, idx - 2 * W - 2); // top left block
+            if (hasBit(P, 0) && img[idx - W - 1]) {
+                union_(label, pivot_idx, pivot[idx - 2 * W - 2]); // top left block
             }
 
             if ((hasBit(P, 1) && img[idx - W]) || (hasBit(P, 2) && img[idx - W + 1]))
-                union_(label, idx, idx - 2 * W); // top bottom block
+                union_(label, pivot_idx, pivot[idx - 2 * W]); // top bottom block
 
             if (hasBit(P, 3) && img[idx + 2 - W])
-                union_(label, idx, idx - 2 * W + 2); // top right block
+                union_(label, pivot_idx, pivot[idx - 2 * W + 2]); // top right block
 
             if ((hasBit(P, 4) && img[idx - 1]) || (hasBit(P, 8) && img[idx + W - 1]))
-                union_(label, idx, idx - 2); // just left block
+                union_(label, pivot_idx, pivot[idx - 2]); // just left block
         }
     }
 
-    __global__ void compression(int32_t *label, int32_t *size, const int32_t W, const int32_t H)
-    {
+    __global__ void compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = row * W + col;
+        const uint32_t idx = pivot[row * W + col];
 
 
         if (row < H && col < W)
             find_n_compress(label, size, idx);
     }
 
-    __global__ void final_labeling(const uint8_t *img, int32_t *label, const int32_t W, const int32_t H)
-    {
+    __global__ void
+    final_labeling(const uint8_t *img, int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W,
+                   const int32_t H) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
         const uint32_t idx = row * W + col;
-
+        const uint32_t pivot_idx = pivot[idx];
         if (row >= H || col >= W)
             return;
 
-        int32_t y = label[idx] + 1;
+        const int32_t y = label[pivot_idx] + 1;
+        if (pivot_idx == label[pivot_idx]) {
+            size[pivot_idx] -= pivot_idx == idx ? size[idx + 1] : size[idx];
+        }
         if (img[idx]) {
             label[idx] = y;
-        }
-        else
+        } else
             label[idx] = 0;
 
-        if (col + 1 < W)
-        {
+        if (col + 1 < W) {
             if (img[idx + 1])
                 label[idx + 1] = y;
             else
                 label[idx + 1] = 0;
 
-            if (row + 1 < H)
-            {
+            if (row + 1 < H) {
                 if (img[idx + W + 1])
                     label[idx + W + 1] = y;
                 else
@@ -132,8 +132,7 @@ namespace cc2d
             }
         }
 
-        if (row + 1 < H)
-        {
+        if (row + 1 < H) {
             if (img[idx + W])
                 label[idx + W] = y;
             else
@@ -143,7 +142,7 @@ namespace cc2d
 
 } // namespace cc2d
 
-std::vector<torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input) {
+std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input) {
     AT_ASSERTM(input.is_cuda(), "input must be a CUDA tensor");
     AT_ASSERTM(input.ndimension() == 2, "input must be a [H, W] shape");
     AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type");
@@ -156,31 +155,48 @@ std::vector<torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor 
 
     // label must be uint32_t
     auto label_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    auto pivot_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    auto size_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+
+
     torch::Tensor label = torch::zeros({H, W}, label_options);
-    torch::Tensor size = torch::zeros({H, W} ,label_options);
+    torch::Tensor pivot = torch::zeros({H, W}, pivot_options);
+    torch::Tensor size = torch::zeros({H, W}, size_options);
     dim3 grid = dim3(((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS, ((H + 1) / 2 + BLOCK_ROWS - 1) / BLOCK_ROWS);
     dim3 block = dim3(BLOCK_COLS, BLOCK_ROWS);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
-    cc2d::init_labeling<<<grid, block, 0, stream>>>(
-            label.data_ptr<int32_t>(), W, H
-    );
     cc2d::init_sizing<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
-            label.data_ptr<int32_t>(), W, H
+                    size.data_ptr<int32_t>(),
+                    pivot.data_ptr<int32_t>(),
+                    W, H
     );
+    cc2d::init_labeling<<<grid, block, 0, stream>>>(
+            label.data_ptr<int32_t>(),
+                    pivot.data_ptr<int32_t>(),
+                    W, H
+    );
+
     cc2d::merge<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
-            label.data_ptr<int32_t>(),
-            W, H
+                    label.data_ptr<int32_t>(),
+                    pivot.data_ptr<int32_t>(),
+                    W, H
     );
     cc2d::compression<<<grid, block, 0, stream>>>(
-            label.data_ptr<int32_t>(), W, H
+            label.data_ptr<int32_t>(),
+                    size.data_ptr<int32_t>(),
+                    pivot.data_ptr<int32_t>(),
+                    W, H
     );
     cc2d::final_labeling<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
-            label.data_ptr<int32_t>(),
-            W, H
+                    label.data_ptr<int32_t>(),
+                    size.data_ptr<int32_t>(),
+                    pivot.data_ptr<int32_t>(),
+                    W, H
     );
-    return  std::vector<torch::Tensor> {label, ret_set};
+
+
+    return std::vector<torch::Tensor> {label, size};
 }

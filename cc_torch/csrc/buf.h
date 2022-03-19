@@ -24,11 +24,11 @@ __device__ int32_t find_n_compress(int32_t *s_buf, int32_t *siz_buf, int32_t n) 
         n = s_buf[n];
         s_buf[id] = n;
     }
-    if (id != n) atomicAdd(siz_buf + n, siz_buf[id]);
+    atomicAdd(siz_buf + n, siz_buf[id]);
     return n;
 }
 
-__device__ void union_(int32_t *s_buf, int32_t *siz_buf, int32_t a, int32_t b){
+__device__ void union_(int32_t *s_buf, int32_t a, int32_t b){
     bool done;
     do{
         a = find(s_buf, a);
@@ -53,11 +53,11 @@ __device__ void union_(int32_t *s_buf, int32_t *siz_buf, int32_t a, int32_t b){
 }
 
 namespace cc2d{
-    __global__ void init_labeling(int32_t *label, const uint32_t W, const uint32_t H);
-    __global__ void init_sizing(const uint8_t *img, int32_t *size, const uint32_t W, const uint32_t H);
-    __global__ void merge(uint8_t *img, int32_t *label, const uint32_t W, const uint32_t H);
-    __global__ void compression(int32_t *label, int32_t *size, const int32_t W, const int32_t H);
-    __global__ void final_labeling(const uint8_t *img, int32_t *label, const int32_t W, const int32_t H);
+    __global__ void init_labeling(int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H);
+    __global__ void init_sizing(const uint8_t *img, int32_t *size, int32_t *pivot, const uint32_t W, const uint32_t H);
+    __global__ void merge(uint8_t *img, int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H);
+    __global__ void compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H);
+    __global__ void final_labeling(const uint8_t *img, int32_t *label, const int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H);
 }
 
 std::vector<torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input);
