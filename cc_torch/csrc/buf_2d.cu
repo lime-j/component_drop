@@ -3,12 +3,18 @@
 // 2d
 #define BLOCK_ROWS 16
 #define BLOCK_COLS 16
+#define BLOCK_BATCHES 4 // You may change this for better performance, but for me, this is what i can have for my GPU
+
 
 namespace cc2d {
-    __global__ void init_labeling(int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H) {
+    __global__ void
+    init_labeling(int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H, const uint32_t N) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = pivot[row * W + col];
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        if (batch >= N) return;
+
+        const uint32_t idx = pivot[batch * H * W + row * W + col];
 
         if (row < H && col < W) {
             label[idx] = idx;
@@ -16,10 +22,15 @@ namespace cc2d {
 
     }
 
-    __global__ void init_sizing(const uint8_t *img, int32_t *size, int32_t *pivot, const uint32_t W, const uint32_t H) {
+    __global__ void init_sizing(const uint8_t *img, int32_t *size, int32_t *pivot, const uint32_t W, const uint32_t H,
+                                const uint32_t N) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = row * W + col;
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        if (batch >= N) return;
+
+        const uint32_t idx = batch * H * W + row * W + col;
+
         if (row < H && col < W) {
             pivot[idx] = (img[idx] ? idx : img[idx + 1] ? idx + 1 : img[idx + W] ? idx + W : img[idx + W + 1] ? idx +
                                                                                                                 W + 1
@@ -32,14 +43,16 @@ namespace cc2d {
 
     }
 
-    __global__ void merge(uint8_t *img, int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H) {
+    __global__ void
+    merge(uint8_t *img, int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H, const uint32_t N) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t pivot_idx = pivot[row * W + col];
-        const uint32_t idx = row * W + col;
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        if (batch >= N) return;
+        const uint32_t idx = batch * H * W + row * W + col;
+        const uint32_t pivot_idx = pivot[idx];
 
-        if (row >= H || col >= W)
-            return;
+        if (row >= H || col >= W) return;
 
         uint32_t P = 0;
 
@@ -89,10 +102,14 @@ namespace cc2d {
         }
     }
 
-    __global__ void compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H) {
+    __global__ void compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H,
+                                const uint32_t N) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = pivot[row * W + col];
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        if (batch >= N) return;
+
+        const uint32_t idx = pivot[batch * H * W + row * W + col];
 
 
         if (row < H && col < W)
@@ -101,10 +118,13 @@ namespace cc2d {
 
     __global__ void
     final_labeling(const uint8_t *img, int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W,
-                   const int32_t H) {
+                   const int32_t H, const uint32_t N) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t idx = row * W + col;
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        if (batch >= N) return;
+
+        const uint32_t idx = batch * H * W + row * W + col;
         const uint32_t pivot_idx = pivot[idx];
         if (row >= H || col >= W)
             return;
@@ -144,9 +164,10 @@ namespace cc2d {
 
 std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input) {
     AT_ASSERTM(input.is_cuda(), "input must be a CUDA tensor");
-    AT_ASSERTM(input.ndimension() == 2, "input must be a [H, W] shape");
+    AT_ASSERTM(input.ndimension() == 3, "input must be a [N, H, W] shape, where N is the batch dim");
     AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type");
 
+    const uint32_t N = input.size(0);
     const uint32_t H = input.size(-2);
     const uint32_t W = input.size(-1);
 
@@ -159,44 +180,45 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     auto size_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
 
 
-    torch::Tensor label = torch::zeros({H, W}, label_options);
-    torch::Tensor pivot = torch::zeros({H, W}, pivot_options);
-    torch::Tensor size = torch::zeros({H, W}, size_options);
-    dim3 grid = dim3(((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS, ((H + 1) / 2 + BLOCK_ROWS - 1) / BLOCK_ROWS);
-    dim3 block = dim3(BLOCK_COLS, BLOCK_ROWS);
+    torch::Tensor label = torch::zeros({N, H, W}, label_options);
+    torch::Tensor pivot = torch::zeros({N, H, W}, pivot_options);
+    torch::Tensor size = torch::zeros({N, H, W}, size_options);
+    dim3 grid = dim3(((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS, ((H + 1) / 2 + BLOCK_ROWS - 1) / BLOCK_ROWS,
+                     (N + BLOCK_BATCHES - 1) / BLOCK_BATCHES);
+    dim3 block = dim3(BLOCK_COLS, BLOCK_ROWS, BLOCK_BATCHES);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     cc2d::init_sizing<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
                     size.data_ptr<int32_t>(),
                     pivot.data_ptr<int32_t>(),
-                    W, H
+                    W, H, N
     );
     cc2d::init_labeling<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
                     pivot.data_ptr<int32_t>(),
-                    W, H
+                    W, H, N
     );
 
     cc2d::merge<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
                     label.data_ptr<int32_t>(),
                     pivot.data_ptr<int32_t>(),
-                    W, H
+                    W, H, N
     );
     cc2d::compression<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
                     pivot.data_ptr<int32_t>(),
-                    W, H
+                    W, H, N
     );
     cc2d::final_labeling<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
                     label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
                     pivot.data_ptr<int32_t>(),
-                    W, H
+                    W, H, N
     );
 
 
-    return std::vector<torch::Tensor> {label, size};
+    return std::vector < torch::Tensor > {label, size};
 }

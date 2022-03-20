@@ -12,7 +12,7 @@ def connected_components_labeling(x):
     Return:
         label (cuda.IntTensor)
     """
-    if x.ndim == 2:
+    if x.ndim == 3:
         return _C.cc_2d(x)
     else:
-        raise ValueError("x must be [H, W] or [D, H, W] shapes")
+        raise ValueError("x must be [N, H, W] shapes")
