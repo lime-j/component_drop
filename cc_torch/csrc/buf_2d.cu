@@ -56,7 +56,7 @@ namespace label_collecting{
             sweet_point = curr_idx + W;
         }else return ;
         
-        result_set[cur_flg + 1] = sweet_point;
+        result_idx[cur_flg + 1] = sweet_point;
     }
 }
 
@@ -237,8 +237,7 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     // label must be uint32_t
     auto on_device_i32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
 
-    torch::Tensor count = torch.zeros({N, 1}, on_device_i32_config);
-    torch::Tensor size = torch::zeros({N, H, W}, on_device_i32_config);
+    torch::Tensor count = torch::zeros({N, 1}, on_device_i32_config);
     torch::Tensor idx_tmp = torch::arange({int(H * W)}, on_device_i32_config).view({1, H, W}) + 1;
     torch::Tensor label = torch::zeros({N, H, W}, on_device_i32_config);
     torch::Tensor size = torch::zeros({N, H, W}, on_device_i32_config);
@@ -271,25 +270,21 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     W, H, N
     );
     cc2d::final_labeling<<<grid, block, 0, stream>>>(
-            input.data_ptr<uint8_t>(),
+                    input.data_ptr<uint8_t>(),
                     label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
-                    W, H, N,
-                    count.data_ptr<int32_t>()
+                    W, H, N
+                    //count.data_ptr<int32_t>()
     );
 
-    //label.print();
-    auto count_start_ptr =  count.data_ptr<int32_t>();
-    auto max_set_size = thrust::max_element(count_start_ptr, count_start_ptr + N, comp_int32);
-    torch::Tensor pos_set = torch.zeros({N, max_set_size}, on_device_i32_config);
-    //std::cerr << label.print() << std::endl;
+    //auto count_start_ptr =  count.data_ptr<int32_t>();
+    //auto max_set_size = thrust::max_element(count_start_ptr, count_start_ptr + N, comp_int32);
+    //torch::Tensor pos_set = torch::zeros({N, max_set_size}, on_device_i32_config);
 
-    auto flg = idx_tmp == label;
-    std::cerr << flg << std::endl;
-    std::cerr << count << std::endl;
+    //auto flg = idx_tmp == label;
     //std::cerr << flg << std::endl;
-    //std::cerr << idx_tmp << std::endl;
-    std::cerr << size[flg] << std::endl;
+    //std::cerr << count << std::endl;
+    //std::cerr << size[flg] << std::endl;
     //auto result_sit = :
     return std::vector < torch::Tensor > {label, size};
 }
