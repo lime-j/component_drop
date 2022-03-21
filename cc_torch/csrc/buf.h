@@ -5,6 +5,11 @@
 #include <torch/script.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <vector>
+#include <thrust/sort.h>
+#include <thrust/functional.h>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+
 
 namespace {
 
@@ -63,10 +68,14 @@ namespace cc2d {
 
     __global__ void
     compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H, const int32_t N);
-
+    
     __global__ void
     final_labeling(const uint8_t *img, int32_t *label, const int32_t *size, const int32_t *pivot, const int32_t W,
                    const int32_t H, const int32_t N);
 }
 
+
+namespace label_collecting{
+    
+}
 std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input);

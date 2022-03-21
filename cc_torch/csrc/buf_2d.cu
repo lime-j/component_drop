@@ -5,6 +5,61 @@
 #define BLOCK_COLS 16
 #define BLOCK_BATCHES 4 // You may change this for better performance, but for me, this is what i can have for my GPU
 
+struct comp_int32{
+    __host__ __device__ bool operator() (int32_t x, int32_t y) {return x < y;}
+};
+
+
+struct identity_functor{
+    __device__ int32_t operator()(int idx){
+        return idx;
+    }
+};
+
+struct sort_functor{
+
+    thrust::device_ptr<int32_t> data;
+    int dsize;
+    __host__ __device__ void operator()(int start_idx, int end_idx){
+        thrust::sort(thrust::device, data + (dsize) * start_idx, data + (dsize) * end_idx + 1);
+    }
+};
+
+namespace label_collecting{
+/*
+    This namespace contains impl collecting labels into a final set;
+ */
+    __global__ void collect(const int32_t* label, int32_t* result_idx, int32_t *result_count, 
+                            const uint32_t W, const uint32_t H, const uint32_t N){
+        const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
+        const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
+        
+        if (row >= H || col >= W || batch >= N) return;
+
+        const uint32_t curr_idx = row * W + col;
+        const uint32_t batch_delta = batch * H * W; 
+        
+        //const int32_t label_lu = label[batch_delta + curr_idx];
+        int32_t cur_flg = -1, sweet_point = 0;
+        if (label[batch_delta + curr_idx] == curr_idx) {
+            cur_flg = atomicAdd(result_count + batch_delta, 1);
+            sweet_point = curr_idx;
+        }else if (label[batch_delta + curr_idx + 1] == curr_idx + 1){
+            cur_flg = atomicAdd(result_count + batch_delta, 1);
+            sweet_point = curr_idx + 1;
+        }else if (label[batch_delta + curr_idx + 1 + W] == curr_idx + 1 + W){
+            cur_flg = atomicAdd(result_count + batch_delta, 1);
+            sweet_point = curr_idx + 1 + W;
+        }else if (label[batch_delta + curr_idx + W] == curr_idx + W){
+            cur_flg = atomicAdd(result_count + batch_delta, 1);
+            sweet_point = curr_idx + W;
+        }else return ;
+        
+        result_set[cur_flg + 1] = sweet_point;
+    }
+}
+
 
 namespace cc2d {
     __global__ void
@@ -118,7 +173,7 @@ namespace cc2d {
 
     __global__ void
     final_labeling(const uint8_t *img, int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W,
-                   const int32_t H, const uint32_t N) {
+                   const int32_t H, const uint32_t N, int32_t* count) {
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
         const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
@@ -132,6 +187,7 @@ namespace cc2d {
         const int32_t y = label[pivot_idx] + 1;
         if (pivot_idx == label[pivot_idx]) {
             size[pivot_idx] -= pivot_idx == idx ? size[idx + 1] : size[idx];
+            atomicAdd(count + batch, 1);
         }
         if (img[idx]) {
             label[idx] = y;
@@ -175,50 +231,69 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     AT_ASSERTM((W % 2) == 0, "shape must be a even number");
 
     // label must be uint32_t
-    auto label_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
-    auto pivot_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
-    auto size_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    auto on_device_i32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    // auto pivot_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    // auto size_options = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
 
+    torch::Tensor count = torch.zeros({N, 1}, on_device_i32_config);
+    
+    //torch::Tensor pos_set = torch.zeros({N, count[0]})
+    //torch::Tensor size_set = torch.zeros()
+    torch::Tensor label = torch::zeros({N, H, W}, on_device_i32_config);
+    //torch::Tensor pivot = torch::zeros({N, H, W}, on_device_i32_config);
+    torch::Tensor size = torch::zeros({N, H, W}, on_device_i32_config);
+    torch::Tensor idx_tmp = torch::arange({int(H * W)}, on_device_i32_config).view({1, H, W}) + 1;
+    
 
-    torch::Tensor label = torch::zeros({N, H, W}, label_options);
-    torch::Tensor pivot = torch::zeros({N, H, W}, pivot_options);
-    torch::Tensor size = torch::zeros({N, H, W}, size_options);
     dim3 grid = dim3(((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS, ((H + 1) / 2 + BLOCK_ROWS - 1) / BLOCK_ROWS,
                      (N + BLOCK_BATCHES - 1) / BLOCK_BATCHES);
     dim3 block = dim3(BLOCK_COLS, BLOCK_ROWS, BLOCK_BATCHES);
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     cc2d::init_sizing<<<grid, block, 0, stream>>>(
-            input.data_ptr<uint8_t>(),
+                    input.data_ptr<uint8_t>(),
                     size.data_ptr<int32_t>(),
-                    pivot.data_ptr<int32_t>(),
+                    //pivot.data_ptr<int32_t>(),
                     W, H, N
     );
     cc2d::init_labeling<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
-                    pivot.data_ptr<int32_t>(),
+                    //pivot.data_ptr<int32_t>(),
                     W, H, N
     );
 
     cc2d::merge<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
                     label.data_ptr<int32_t>(),
-                    pivot.data_ptr<int32_t>(),
+                    //pivot.data_ptr<int32_t>(),
                     W, H, N
     );
     cc2d::compression<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
-                    pivot.data_ptr<int32_t>(),
+                    //pivot.data_ptr<int32_t>(),
                     W, H, N
     );
     cc2d::final_labeling<<<grid, block, 0, stream>>>(
             input.data_ptr<uint8_t>(),
                     label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
-                    pivot.data_ptr<int32_t>(),
-                    W, H, N
+                    //pivot.data_ptr<int32_t>(),
+                    W, H, N,
+                    count.data_ptr<int32_t>()
     );
 
+    //label.print();
+    auto count_start_ptr =  count.data_ptr<int32_t>();
+    auto max_set_size = thrust::max_element(count_start_ptr, count_start_ptr + N, comp_int32);
+    torch::Tensor pos_set = torch.zeros({N, max_set_size}, on_device_i32_config);
+    //std::cerr << label.print() << std::endl;
 
+    auto flg = idx_tmp == label;
+    std::cerr << flg << std::endl;
+    std::cerr << count << std::endl;
+    //std::cerr << flg << std::endl;
+    //std::cerr << idx_tmp << std::endl;
+    std::cerr << size[flg] << std::endl;
+    //auto result_sit = :
     return std::vector < torch::Tensor > {label, size};
 }
