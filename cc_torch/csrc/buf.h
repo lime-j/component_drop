@@ -53,19 +53,19 @@ namespace {
 
 namespace cc2d {
     __global__ void
-    init_labeling(int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H, const int32_t N);
+    init_labeling(int32_t *label, const uint32_t W, const uint32_t H, const int32_t N);
 
     __global__ void
-    init_sizing(const uint8_t *img, int32_t *size, int32_t *pivot, const uint32_t W, const uint32_t H, const int32_t N);
+    init_sizing(const uint8_t *img, int32_t *size, const uint32_t W, const uint32_t H, const int32_t N);
 
     __global__ void
-    merge(uint8_t *img, int32_t *label, const int32_t *pivot, const uint32_t W, const uint32_t H, const int32_t N);
+    merge(uint8_t *img, int32_t *label, const uint32_t W, const uint32_t H, const int32_t N);
 
     __global__ void
-    compression(int32_t *label, int32_t *size, const int32_t *pivot, const int32_t W, const int32_t H, const int32_t N);
+    compression(int32_t *label, int32_t *size, const int32_t W, const int32_t H, const int32_t N);
 
     __global__ void
-    final_labeling(const uint8_t *img, int32_t *label, const int32_t *size, const int32_t *pivot, const int32_t W,
+    final_labeling(const uint8_t *img, int32_t *label, const int32_t *size, const int32_t W,
                    const int32_t H, const int32_t N);
 }
 
