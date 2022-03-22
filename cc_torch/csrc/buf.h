@@ -76,6 +76,15 @@ namespace cc2d {
 
 
 namespace label_collecting{
-    
+    __global__ void 
+    collect(const int32_t* label, const int32_t* size, 
+            int32_t * result_idx, int32_t* result_size, int32_t * result_count, 
+            const uint32_t W, const uint32_t H, const uint32_t N);
+    __global__ void 
+    calc_thresh(const int32_t* size, int32_t *result,
+                const int32_t N, const int max_size, const float lam);
+    __global__ void 
+    finalize_mask(const int32_t* thresh_idx, const int32_t* sorted_idx, uint8_t* visit_map
+                  const int32_t H, const int32_t W, const int32_t N);
 }
-std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input);
+std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const float lam);
