@@ -30,26 +30,45 @@ namespace label_collecting{
 /*
     This namespace contains impl collecting labels into a final set;
  */
-    __global__ void finalize_mask(const int32_t *thresh_idx, const int32_t* sorted_idx, 
-                                  uint8_t* visit_map, const int32_t H, const int32_t W, const int32_t N){
-        const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y);
-        const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x);
-        const uint32_t 
-    
-    }
+    __global__ void finalize_mask(const int32_t *label, const int32_t *thresh_idx, const int32_t* sorted_idx, 
+                                  uint8_t* visit_map, const int32_t H, const int32_t W, const int32_t N, const int32_t max_count){
+        const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
+        const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
+        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z); 
+        
+        const uint32_t visit_pos = batch * H * W + row * W + col;
 
+        if (row >= H || col >= W || batch >= N) return ;
+        
+        const int32_t r_limit = thresh_idx[batch];
+        
+        for (int i = 0; i <= r_limit; ++ i){
+            visit_map[visit_pos] &= (label[visit_pos] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + 1] &= (label[visit_pos + 1] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + W] &= (label[visit_pos + W] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + W + 1] &= (label[visit_pos + W + 1] != 1 + sorted_idx[batch * max_count + i]);
+        }
+        
+    }
+    __global__ void index(int32_t* dist, const int64_t* idx, const int32_t* src, const int32_t M, const int32_t N){
+        const uint32_t n = blockIdx.x;
+        const uint32_t m = threadIdx.x;
+        if (n >= N || m >= M) return ;
+        const uint32_t to_id = n * M + m;
+        dist[to_id] = src[idx[to_id]];
+        
+    }
 
     __global__ void calc_thresh(const int32_t* size, int32_t *result, const int32_t N, const int max_size, const float lam){
         const uint32_t start_point = blockIdx.x * blockDim.x + threadIdx.x;
         if (start_point >= N) return;
-        const uint32_t start_idx = start_point * max_size, end_idx = start_point * max_size + max_size;
-        result[start_point] = int32_t(float(size[end_idx - 1]) * (DROP_THRESH - lam) / DROP_THRESH;
+        result[start_point] = int32_t(float(size[start_point]) * (DROP_THRESH - lam) / DROP_THRESH);
     } 
 
 
     __global__ void collect(const int32_t* label, const int32_t* size, 
                             int32_t* result_idx, int32_t* result_size, int32_t *result_count, 
-                            const uint32_t W, const uint32_t H, const uint32_t N){
+                            const uint32_t max_count, const uint32_t W, const uint32_t H, const uint32_t N){
         const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
         const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
         const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
@@ -60,22 +79,21 @@ namespace label_collecting{
         const uint32_t batch_delta = batch * H * W; 
         
         //const int32_t label_lu = label[batch_delta + curr_idx];
-        int32_t cur_flg = -1, sweet_point = 0, sweet_size=0;
-        if (label[curr_idx] == curr_idx + 1) {
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = batch_delta + curr_idx;
-        }else if (label[curr_idx + 1] == curr_idx + 2){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = batch_delta + curr_idx + 1;
-        }else if (label[curr_idx + 1 + W] == curr_idx + 1 + W){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = batch_delta + curr_idx + 1 + W;
-        }else if (label[curr_idx + W] == curr_idx + W){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = batch_delta + curr_idx + W;
+        int32_t cur_flg = -1;
+        if (label[curr_idx + batch_delta] == curr_idx + 1) {
+            cur_flg = atomicAdd(result_count + batch , 1);
+            result_size[batch * max_count + cur_flg] = size[curr_idx + batch_delta];
+        }else if (label[curr_idx + 1 + batch_delta] == curr_idx + 1){
+            cur_flg = atomicAdd(result_count + batch, 1);
+            result_size[batch * max_count + cur_flg] = size[curr_idx + 1 + batch_delta];
+        }else if (label[curr_idx + 1 + W + batch_delta] == curr_idx + 1){
+            cur_flg = atomicAdd(result_count + batch, 1);
+            result_size[batch * max_count + cur_flg] = size[curr_idx + 1 + W + batch_delta];
+        }else if (label[curr_idx + W + batch_delta] == curr_idx + 1){
+            cur_flg = atomicAdd(result_count + batch, 1);
+            result_size[batch * max_count + cur_flg] = size[curr_idx + W + batch_delta];
         }else return ;
-        result_size[batch_delta + cur_flg] = sweet_size; 
-        result_idx[batch_delta + cur_flg] = sweet_point;
+        result_idx[batch * max_count + cur_flg] = curr_idx;
     }
     
 }
@@ -197,7 +215,7 @@ namespace cc2d {
             return;
         
         //bool is_father = false;
-        int32_t father_id = -1;
+        //int32_t father_id = -1;
         const int32_t y = label[idx] + 1;
         int32_t block_size = size[idx];
         if (idx == label[idx])  {
@@ -245,55 +263,24 @@ namespace cc2d {
 
 } // namespace cc2d
 
-
-
-
-
-std::vector<torch::Tensor> connected_components_counting(const torch::Tensor &input){
+std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const torch::Tensor &lam) {
     AT_ASSERTM(input.is_cuda(), "input must be a CUDA tensor");
     AT_ASSERTM(input.ndimension() == 3, "input must be a [N, H, W] shape, where N is the batch dim");
-    AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type");
-
-    const uint32_t N = input.size(0);
-    const uint32_t H = input.size(-2);
-    const uint32_t W = input.size(-1);
- 
-    AT_ASSERTM((H % 2) == 0, "shape must be a even number");
-    AT_ASSERTM((W % 2) == 0, "shape must be a even number");
+    AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type tensor");
+    //AT_ASSERTM(lam <= DROP_THRESH + 1e-10, "lam must smaller than drop thresh!");
     
-    auto on_device_i32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device()); 
-    
-    auto labeling_ret = connected_componnets_labeling_2d(input, 0.1);
-    torch::Tensor size = std::move(labeling_ret[1]), label = std::move(labeling_ret[0]), count = std::move(labeling_ret[2]);
-    
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    
-    dim3 grid = dim3(((W + 1) / 2 + BLOCK_COLS - 1) / BLOCK_COLS, ((H + 1) / 2 + BLOCK_ROWS - 1) / BLOCK_ROWS,
-                    (N + BLOCK_BATCHES - 1) / BLOCK_BATCHES);
-    dim3 block = dim3(BLOCK_COLS, BLOCK_ROWS, BLOCK_BATCHES);
-
-    return std::vector<torch::Tensor> {input};
-    //thrust::max_element()
-    //label_collecting::collect<<<grid, block, 0, stream>>>(input.data_ptr<uint8_t>(), 
-
-}
-
-
-
-std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const float lam) {
-    // assertion moved to counting function
-    // we will gradually remove direct calling for this func
-    AT_ASSERTM(lam <= DROP_THRESH, "lam must smaller than drop thresh!");
-
     const uint32_t N = input.size(0);
     const uint32_t H = input.size(-2);
     const uint32_t W = input.size(-1);
 
+    AT_ASSERTM(!(H % 2), "H must be an even number");
+    AT_ASSERTM(!(W % 2), "W must be an even number");
+    
     // label must be uint32_t
-    auto on_device_i32_config = torch::TensorOptions().dtype(torch::kFloat32).device(input.device());
-    auto on_device_f32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
-    auto on_device_u8_config = torch::TensorOptions().dtype(torch::U8).device(input.device());
-
+    auto on_device_i32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    auto on_device_f32_config = torch::TensorOptions().dtype(torch::kFloat32).device(input.device());
+    auto on_device_u8_config = torch::TensorOptions().dtype(torch::kU8).device(input.device());
+    
     torch::Tensor count = torch::zeros({N, 1}, on_device_i32_config);
     torch::Tensor label = torch::zeros({N, H, W}, on_device_i32_config);
     torch::Tensor size = torch::zeros({N, H, W}, on_device_i32_config);
@@ -306,6 +293,7 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     size.data_ptr<int32_t>(),
                     W, H, N
     );
+    
     cc2d::init_labeling<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
                     W, H, N
@@ -337,7 +325,7 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     //auto max_count = thrust::max_element(count_ptr, count_ptr + N, comp_int32);
     auto max_count_tup = torch::max(count, 0);
     auto max_count = std::get<0>(max_count_tup)[0].item<int>();
-    torch::Tensor count_tmp = torch::zeros({N, 1}, on_device_i32_config);
+    torch::Tensor count_tmp = torch::zeros({N}, on_device_i32_config);
     //std::cerr << "max_count" << 
     // batchsize < 12
     torch::Tensor count_size = torch::zeros({N, max_count}, on_device_i32_config) + 192608170; 
@@ -349,40 +337,56 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     count_idx.data_ptr<int32_t>(),
                     count_size.data_ptr<int32_t>(),
                     count_tmp.data_ptr<int32_t>(),
-                    W, H, N
+                    max_count, W, H, N
     );
-    auto sort_ret_pir = count_size.sort(0);
+    auto sort_ret_pir = count_size.sort(1);
     torch::Tensor sorted_count = std::get<0>(sort_ret_pir), sort_idx = std::get<1>(sort_ret_pir);
     sorted_count.index_put_({sorted_count == 192608170}, 0);
-    
-    torch::Tensor sorted_idx = count_idx.index({sort_idx});
-    torch::Tensor curr_sorted_count = sorted_count.cumsum(1); 
-    
+
+    torch::Tensor sorted_idx = torch::zeros({N, max_count}, on_device_i32_config);
+    dim3 grid_n = dim3(N);
+    dim3 block_max_count = dim3(((31 + max_count) / 32) * 32);
+
+    label_collecting::index<<<grid_n, block_max_count, 0, stream>>>(
+            sorted_idx.data_ptr<int32_t>(),
+            sort_idx.data_ptr<int64_t>(),
+            count_idx.data_ptr<int32_t>(), max_count, N
+    );
+
+    //count_idx.index({sort_idx});
+    torch::Tensor curr_sorted_count = sorted_count.cumsum(1).to(torch::kInt32); 
     dim3 grid_1 = dim3(1);
-    dim3 block_thread = dim3(N);
-    
+    dim3 block_thread = dim3(((31 + N) / 32) * 32);
+    const float lamb = lam.item<float>();
     torch::Tensor thresh = torch::zeros({N}, on_device_i32_config); 
     label_collecting::calc_thresh<<<grid_1, block_thread, 0, stream>>> (
-                    size.data_ptr<int32_t>(),
+                    count_tmp.data_ptr<int32_t>(),
                     thresh.data_ptr<int32_t>(),
-                    N, max_count, lam
-    )
-    std::vector<int32_t> thresh_idx(N);  
-    auto cnt_ptr = curr_sorted_count.data_ptr<int32_t>(); 
-    for (int i = 0; i < N; ++ i){
-        const start_idx = i * max_count, end_idx = (i + 1) * max_count;
-        auto ptr = thrust::lower_bound(thrust::device, cnt_ptr + start_idx, cnt_ptr + end_idx, thresh[i].item<int>());
-        thresh_idx[i] = ptr - start_idx;
-    }
-    
-    torch::Tensor thresh_idx_device = torch::from_blob(thresh_idx, on_device_i32_config);
+                    N, max_count, lamb
+    );
+
+    //std::vector<int> thresh_idx(N);  
+    //auto cnt_ptr = curr_sorted_count.data_ptr<int32_t>();
+    //std::cerr << "pre_loop" << std::endl;
+    //for (int i = 0; i < N; ++ i){
+    //    const int32_t start_idx = i * max_count, end_idx = (i + 1) * max_count;
+    //    std::cerr << "before thrust" << std::endl;
+    //    auto ptr = thrust::lower_bound(thrust::device, cnt_ptr + start_idx, cnt_ptr + end_idx, thresh[i].item<int>());
+    //    std::cerr << "after thrust" << std::endl;
+    //    thresh_idx[i] = int(ptr - cnt_ptr - i * max_count);
+    //    std::cerr << thresh_idx[i] << std::endl;
+    //}
+    //AT_CUDA_CHECK(cudaStreamSynchronize(stream));
+    //std::cerr << "finish thrust" << std::endl; 
+    //torch::Tensor thresh_idx_device = torch::from_blob(thresh_idx.data(), {N}).to(torch::kInt32).cuda();
     torch::Tensor visit_map = torch::ones({N, H, W}, on_device_u8_config);
     label_collecting::finalize_mask<<<grid, block, 0, stream>>>(
-            thresh_idx_device.data_ptr<int32_t>(),
+            label.data_ptr<int32_t>(),
+            thresh.data_ptr<int32_t>(),
             sorted_idx.data_ptr<int32_t>(),
             visit_map.data_ptr<uint8_t>(),
-            H, W, N
-    )
-
-    return std::vector < torch::Tensor > {label, count};
+            H, W, N, max_count
+    );
+    auto final_result = torch::bitwise_and(visit_map, input); 
+    return std::vector < torch::Tensor > {final_result};
 }

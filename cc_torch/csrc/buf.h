@@ -9,7 +9,8 @@
 #include <thrust/functional.h>
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
-
+#include <thrust/execution_policy.h>
+#include <thrust/binary_search.h>
 
 namespace {
 
@@ -70,7 +71,8 @@ namespace cc2d {
     compression(int32_t *label, int32_t *size, const int32_t W, const int32_t H, const int32_t N);
 
     __global__ void
-    final_labeling(const uint8_t *img, int32_t *label, const int32_t *size, const int32_t W,
+    final_labeling(const uint8_t *img, int32_t *label, 
+                   const int32_t *size, const int32_t W,
                    const int32_t H, const int32_t N);
 }
 
@@ -79,12 +81,15 @@ namespace label_collecting{
     __global__ void 
     collect(const int32_t* label, const int32_t* size, 
             int32_t * result_idx, int32_t* result_size, int32_t * result_count, 
-            const uint32_t W, const uint32_t H, const uint32_t N);
+            const uint32_t max_count, const uint32_t W, const uint32_t H, const uint32_t N);
     __global__ void 
     calc_thresh(const int32_t* size, int32_t *result,
                 const int32_t N, const int max_size, const float lam);
+    __global__ void
+    index(int32_t* dist, const int64_t* idx, const int32_t* src, const int32_t M, const int32_t N);
     __global__ void 
-    finalize_mask(const int32_t* thresh_idx, const int32_t* sorted_idx, uint8_t* visit_map
-                  const int32_t H, const int32_t W, const int32_t N);
+    finalize_mask(const int32_t* label, const int32_t* thresh_idx, const int32_t* sorted_idx, uint8_t* visit_map
+                 ,const int32_t H, const int32_t W, const int32_t N, const int32_t max_count);
 }
-std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const float lam);
+std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const torch::Tensor &lam);
+

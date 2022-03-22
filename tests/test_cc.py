@@ -50,7 +50,7 @@ class TestCC(unittest.TestCase):
              [0, 65,  0,  0, 53, 53, 53,  0],
              [0, 65,  0,  0, 53, 53, 53,  0]]], dtype=torch.int32).reshape(2, 12, 8).cuda()
 
-        tup = cc_torch.connected_components_labeling(img_2d)
+        tup = cc_torch.connected_components_labeling(img_2d, torch.tensor(0.1, dtype=torch.float32))
         output = tup[0]
         for item in tup : 
             print(item)
