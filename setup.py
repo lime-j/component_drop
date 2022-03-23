@@ -17,6 +17,7 @@ def get_extensions():
     extra_compile_args = {
         "cxx": [],
         "nvcc": [
+            "-O3",
             "-DCUDA_HAS_FP16=1",
             "-D__CUDA_NO_HALF_OPERATORS__",
             "-D__CUDA_NO_HALF_CONVERSIONS__",
