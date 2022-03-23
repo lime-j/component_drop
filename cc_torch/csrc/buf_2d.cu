@@ -1,9 +1,9 @@
 #include "buf.h"
 
 // 2d
-#define BLOCK_ROWS 16
-#define BLOCK_COLS 16
-#define BLOCK_BATCHES 4 // You may change this for better performance, but for me, this is what i can have for my GPU
+#define BLOCK_ROWS 32
+#define BLOCK_COLS 32
+#define BLOCK_BATCHES 1 // You may change this for better performance, but for me, this is what i can have for my GPU
 #define DROP_THRESH 0.2
 
 struct comp_int32{
@@ -43,26 +43,26 @@ namespace label_collecting{
         const int32_t r_limit = thresh_idx[batch];
         
         for (int i = 0; i <= r_limit; ++ i){
-            visit_map[visit_pos] &= (label[visit_pos] != 1 + sorted_idx[batch * max_count + i]);
-            visit_map[visit_pos + 1] &= (label[visit_pos + 1] != 1 + sorted_idx[batch * max_count + i]);
-            visit_map[visit_pos + W] &= (label[visit_pos + W] != 1 + sorted_idx[batch * max_count + i]);
-            visit_map[visit_pos + W + 1] &= (label[visit_pos + W + 1] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos] &=  label[visit_pos] && (label[visit_pos] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + 1] &= label[visit_pos + 1] && (label[visit_pos + 1] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + W] &= label[visit_pos + W] && (label[visit_pos + W] != 1 + sorted_idx[batch * max_count + i]);
+            visit_map[visit_pos + W + 1] &= label[visit_pos + 1 + W]&& (label[visit_pos + W + 1] != 1 + sorted_idx[batch * max_count + i]);
         }
         
     }
     __global__ void index(int32_t* dist, const int64_t* idx, const int32_t* src, const int32_t M, const int32_t N){
-        const uint32_t n = blockIdx.x;
-        const uint32_t m = threadIdx.x;
+        const uint32_t n = blockIdx.x * blockDim.x + threadIdx.x;
+        const uint32_t m = blockIdx.y * blockDim.y + threadIdx.y;
         if (n >= N || m >= M) return ;
         const uint32_t to_id = n * M + m;
-        dist[to_id] = src[idx[to_id]];
-        
+        dist[to_id] = src[idx[to_id] + n * M];
+        //atomicAdd(dist + M - 1, 1);
     }
 
     __global__ void calc_thresh(const int32_t* size, int32_t *result, const int32_t N, const int max_size, const float lam){
         const uint32_t start_point = blockIdx.x * blockDim.x + threadIdx.x;
         if (start_point >= N) return;
-        result[start_point] = int32_t(float(size[start_point]) * (DROP_THRESH - lam) / DROP_THRESH);
+        result[start_point] = int(float(size[(start_point + 1)* max_size - 1]) * (DROP_THRESH - lam) / DROP_THRESH);
     } 
 
 
@@ -268,7 +268,7 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     AT_ASSERTM(input.ndimension() == 3, "input must be a [N, H, W] shape, where N is the batch dim");
     AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type tensor");
     //AT_ASSERTM(lam <= DROP_THRESH + 1e-10, "lam must smaller than drop thresh!");
-    
+    //std::cerr << "Input" << input << std::endl;
     const uint32_t N = input.size(0);
     const uint32_t H = input.size(-2);
     const uint32_t W = input.size(-1);
@@ -278,7 +278,9 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
     
     // label must be uint32_t
     auto on_device_i32_config = torch::TensorOptions().dtype(torch::kInt32).device(input.device());
+    auto on_host_i32_config = torch::TensorOptions().dtype(torch::kInt32);
     auto on_device_f32_config = torch::TensorOptions().dtype(torch::kFloat32).device(input.device());
+    
     auto on_device_u8_config = torch::TensorOptions().dtype(torch::kU8).device(input.device());
     
     torch::Tensor count = torch::zeros({N, 1}, on_device_i32_config);
@@ -320,14 +322,10 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     count.data_ptr<int32_t>(),
                     W, H, N
     );
-    
-    //auto count_ptr = count.data_ptr<int32_t>();
-    //auto max_count = thrust::max_element(count_ptr, count_ptr + N, comp_int32);
+    //std::cerr << label << std::endl;
     auto max_count_tup = torch::max(count, 0);
     auto max_count = std::get<0>(max_count_tup)[0].item<int>();
     torch::Tensor count_tmp = torch::zeros({N}, on_device_i32_config);
-    //std::cerr << "max_count" << 
-    // batchsize < 12
     torch::Tensor count_size = torch::zeros({N, max_count}, on_device_i32_config) + 192608170; 
     // NOTE: >= 1920 * 1080 * 64, safe enough (for me)
     torch::Tensor count_idx = torch::zeros({N, max_count}, on_device_i32_config);
@@ -340,12 +338,17 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     max_count, W, H, N
     );
     auto sort_ret_pir = count_size.sort(1);
+    
     torch::Tensor sorted_count = std::get<0>(sort_ret_pir), sort_idx = std::get<1>(sort_ret_pir);
     sorted_count.index_put_({sorted_count == 192608170}, 0);
-
+    //std::cerr << "count_size" << count_size << std::endl;
+    //std::cerr << "count_idx" << count_idx << std::endl;
+    //std::cerr << "sorted_count" << sorted_count << std::endl;
+    //std::cerr << "sort_idx" << sort_idx << std::endl;
     torch::Tensor sorted_idx = torch::zeros({N, max_count}, on_device_i32_config);
-    dim3 grid_n = dim3(N);
-    dim3 block_max_count = dim3(((31 + max_count) / 32) * 32);
+    //std::cerr << N << " " << max_count << std::endl;
+    dim3 grid_n = dim3(N, (max_count + 1023) / 1024);
+    dim3 block_max_count = dim3(1, 1024);
 
     label_collecting::index<<<grid_n, block_max_count, 0, stream>>>(
             sorted_idx.data_ptr<int32_t>(),
@@ -355,38 +358,42 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
 
     //count_idx.index({sort_idx});
     torch::Tensor curr_sorted_count = sorted_count.cumsum(1).to(torch::kInt32); 
+    
     dim3 grid_1 = dim3(1);
-    dim3 block_thread = dim3(((31 + N) / 32) * 32);
+    dim3 block_thread = dim3(((1024 + N) / 1024) * 1024);
     const float lamb = lam.item<float>();
+    //std::cerr << lamb << std::endl;
     torch::Tensor thresh = torch::zeros({N}, on_device_i32_config); 
+    
     label_collecting::calc_thresh<<<grid_1, block_thread, 0, stream>>> (
-                    count_tmp.data_ptr<int32_t>(),
+                    curr_sorted_count.data_ptr<int32_t>(),
                     thresh.data_ptr<int32_t>(),
                     N, max_count, lamb
     );
-
-    //std::vector<int> thresh_idx(N);  
-    //auto cnt_ptr = curr_sorted_count.data_ptr<int32_t>();
-    //std::cerr << "pre_loop" << std::endl;
-    //for (int i = 0; i < N; ++ i){
-    //    const int32_t start_idx = i * max_count, end_idx = (i + 1) * max_count;
-    //    std::cerr << "before thrust" << std::endl;
-    //    auto ptr = thrust::lower_bound(thrust::device, cnt_ptr + start_idx, cnt_ptr + end_idx, thresh[i].item<int>());
-    //    std::cerr << "after thrust" << std::endl;
-    //    thresh_idx[i] = int(ptr - cnt_ptr - i * max_count);
-    //    std::cerr << thresh_idx[i] << std::endl;
-    //}
-    //AT_CUDA_CHECK(cudaStreamSynchronize(stream));
-    //std::cerr << "finish thrust" << std::endl; 
-    //torch::Tensor thresh_idx_device = torch::from_blob(thresh_idx.data(), {N}).to(torch::kInt32).cuda();
+    
+    std::vector<int> thresh_idx(N);
+    for (int i = 0; i < N; ++ i){
+        const int32_t start_idx = i * max_count, end_idx = (i + 1) * max_count;
+        auto ptr = thrust::lower_bound(thrust::device, curr_sorted_count.data_ptr<int32_t>() + start_idx, curr_sorted_count.data_ptr<int32_t>() + end_idx, thresh[i].item<int>());
+        thresh_idx[i] = thrust::distance(curr_sorted_count.data_ptr<int32_t>() + start_idx, ptr) - 1;
+        thresh_idx[i] = thresh_idx[i] > 0 ? thresh_idx[i] : 0;
+        //std::cerr << thresh_idx[i] << std::endl;
+        
+    }
+    torch::Tensor thresh_idx_device = torch::from_blob(thresh_idx.data(), {N}, on_host_i32_config).to(torch::kCUDA);
+    //std::cerr << thresh_idx_device << std::endl;
+    //std::cerr << sorted_idx << std::endl;
+    
+    
     torch::Tensor visit_map = torch::ones({N, H, W}, on_device_u8_config);
+    //std::cerr <<count_tmp << std::endl << thresh << std::endl;
+    //std::cerr << visit_map << std::endl;
     label_collecting::finalize_mask<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
-            thresh.data_ptr<int32_t>(),
+            thresh_idx_device.data_ptr<int32_t>(),
             sorted_idx.data_ptr<int32_t>(),
             visit_map.data_ptr<uint8_t>(),
             H, W, N, max_count
     );
-    auto final_result = torch::bitwise_and(visit_map, input); 
-    return std::vector < torch::Tensor > {final_result};
+    return std::vector < torch::Tensor > {visit_map};
 }
