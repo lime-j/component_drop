@@ -263,7 +263,7 @@ namespace cc2d {
 
 } // namespace cc2d
 
-std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const torch::Tensor &lam) {
+torch::Tensor connected_componnets_labeling_2d(const torch::Tensor &input, const torch::Tensor &lam) {
     AT_ASSERTM(input.is_cuda(), "input must be a CUDA tensor");
     AT_ASSERTM(input.ndimension() == 3, "input must be a [N, H, W] shape, where N is the batch dim");
     AT_ASSERTM(input.scalar_type() == torch::kUInt8, "input must be a uint8 type tensor");
@@ -381,13 +381,8 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
         
     }
     torch::Tensor thresh_idx_device = torch::from_blob(thresh_idx.data(), {N}, on_host_i32_config).to(torch::kCUDA);
-    //std::cerr << thresh_idx_device << std::endl;
-    //std::cerr << sorted_idx << std::endl;
-    
-    
+   
     torch::Tensor visit_map = torch::ones({N, H, W}, on_device_u8_config);
-    //std::cerr <<count_tmp << std::endl << thresh << std::endl;
-    //std::cerr << visit_map << std::endl;
     label_collecting::finalize_mask<<<grid, block, 0, stream>>>(
             label.data_ptr<int32_t>(),
             thresh_idx_device.data_ptr<int32_t>(),
@@ -395,5 +390,5 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
             visit_map.data_ptr<uint8_t>(),
             H, W, N, max_count
     );
-    return std::vector < torch::Tensor > {visit_map};
+    return visit_map;
 }
