@@ -91,5 +91,5 @@ namespace label_collecting{
     finalize_mask(const int32_t* label, const int32_t* thresh_idx, const int32_t* sorted_idx, uint8_t* visit_map
                  ,const int32_t H, const int32_t W, const int32_t N, const int32_t max_count);
 }
-std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor &input, const torch::Tensor &lam);
+torch::Tensor connected_componnets_labeling_2d(const torch::Tensor &input, const float lam);
 
