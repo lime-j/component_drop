@@ -9,6 +9,8 @@ References
 
 <hr>
 
+- [Connected_components_PyTorch](https://github.com/zsef123/Connected_components_PyTorch)
+
 ## Install
 
 ```
