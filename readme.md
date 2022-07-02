@@ -1,6 +1,6 @@
 # Component Drop for PyTorch
 
-This repository implements a heuristic way to drop detrimental edges, which is used in our paper "Deep Flexible Structure Preserving Image Smoothing, ACM MM 2022"
+This repository implements a heuristic way to drop trivial edges, which is used in our paper "Deep Flexible Structure Preserving Image Smoothing, ACM MM 2022"
 
 References
 - [YACCLAB : Yet Another Connected Components Labeling Benchmark](https://github.com/prittt/YACCLAB)
